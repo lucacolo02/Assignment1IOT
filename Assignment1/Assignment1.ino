@@ -24,7 +24,7 @@ IPAddress server_addr(MYSQL_IP);      // IP of the MySQL *server* here
 MySQL_Connection conn((Client *)&client);
 
 char query[128];
-char INSERT_DATA[] = "INSERT INTO `%s`.`Gioielleria` (`led_status`) VALUES ('%s')";
+char INSERT_DATA[] = "INSERT INTO `%s`.`Gioielleria` (`led_status`,`Temperature`) VALUES ('%s','%f')";
 
 
 #define DISPLAY_CHARS 16    // number of characters on a line
@@ -32,7 +32,14 @@ char INSERT_DATA[] = "INSERT INTO `%s`.`Gioielleria` (`led_status`) VALUES ('%s'
 #define DISPLAY_ADDR 0x27   // display address on I2C bus
 LiquidCrystal_I2C lcd(DISPLAY_ADDR, DISPLAY_CHARS, DISPLAY_LINES);   // display object
 
+#define NTC_PIN A0     // NTC analog pin
+#define NTC_R1 10000   // value of R1 on the module (10KOhm)
 
+// Steinhart-Hart coefficients for the NTC
+#define NTC_A 3.354016e-03
+#define NTC_B 2.569850e-04
+#define NTC_C 2.620131e-06
+#define NTC_D 6.383091e-08
 #define LED_GREEN D6
 #define LED_RED D7
 #define PHOTORESISTOR_IN A0
@@ -107,8 +114,11 @@ void ledOff() {
 
 void personaIn() {
   tempoIn = millis();
-  
-  
+  float Vo = analogRead(NTC_PIN);              // voltage, range 0~1023
+  float R2 = NTC_R1 * ((float)Vo / 1023.0f);   // compute the resistance on thermistor at current temperature
+  float logR2R1 = log(R2 / NTC_R1);
+  float T = 1.0f / (NTC_A + (NTC_B * logR2R1) + (NTC_C * (logR2R1 * logR2R1)) + (NTC_D * (logR2R1 * logR2R1 * logR2R1)));   // temperature in Kelvin
+  T = T - 273.15f;  
 
   if (persone < 5) {
     
@@ -134,7 +144,7 @@ void personaIn() {
    
 
   }
- WriteMultiToDB(led_status);   // write on MySQL table if connection works
+ WriteMultiToDB(led_status, T);   // write on MySQL table if connection works
 }
 
 void personaOut() {
@@ -175,7 +185,7 @@ bool isButtonPressed() {
   return false;
 }
 
-int WriteMultiToDB(char led_status[]) {
+int WriteMultiToDB(char led_status[], float T) {
 
   // connect to MySQL
   if (!conn.connected()) {
@@ -191,7 +201,7 @@ int WriteMultiToDB(char led_status[]) {
 
   // log data
   MySQL_Cursor *cur_mem = new MySQL_Cursor(&conn);
-  sprintf(query, INSERT_DATA, mysql_user, led_status);
+  sprintf(query, INSERT_DATA, mysql_user, led_status, T);
   Serial.println(query);
   // execute the query
   cur_mem->execute(query);
