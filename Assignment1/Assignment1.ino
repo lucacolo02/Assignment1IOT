@@ -4,8 +4,11 @@
 #include "secrets.h"
 #include <MySQL_Connection.h>
 #include <MySQL_Cursor.h>
+#include <InfluxDbClient.h>
 
-
+// InfluxDB cfg
+InfluxDBClient client_idb(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+Point pointDevice("device_status");
 // WiFi cfg
 char ssid[] = SECRET_SSID;   // your network SSID (name)
 char pass[] = SECRET_PASS;   // your network password
@@ -88,6 +91,7 @@ void setup() {
 }
 
 void loop() {
+  int static init_db = 0;
   long rssi = connectToWiFi();  
   lcd.setBacklight(255);  // set backlight to maximum
   lcd.home();               // move cursor to 0,0
@@ -105,6 +109,13 @@ void loop() {
     personaIn();
     
   }
+  
+  if (init_db == 0) {   // set tags
+    pointDevice.addTag("device", "ESP8266");
+    pointDevice.addTag("SSID", WiFi.SSID());
+    init_db = 1;
+  }
+  
 }
 
 void ledOff() {
@@ -145,6 +156,7 @@ void personaIn() {
 
   }
  WriteMultiToDB(led_status, T);   // write on MySQL table if connection works
+ WriteMultiToInflux(persone, T);   // write on InfluxDB
 }
 
 void personaOut() {
@@ -236,5 +248,31 @@ long connectToWiFi() {
   }
 
   return rssi_strength;
+}
+void WriteMultiToInflux(int persone, float T) {
+
+  // store measured value into point
+  pointDevice.clearFields();
+
+  // report RSSI of currently connected network
+  pointDevice.addField("persone", persone);
+  pointDevice.addField("temperatura", T);
+  Serial.print(F("Writing: "));
+  Serial.println(pointDevice.toLineProtocol());
+  if (!client_idb.writePoint(pointDevice)) {
+    Serial.print(F("InfluxDB write failed: "));
+    Serial.println(client_idb.getLastErrorMessage());
+  }
+}
+
+void check_influxdb() {
+  // check InfluxDB server connection
+  if (client_idb.validateConnection()) {
+    Serial.print(F("Connected to InfluxDB: "));
+    Serial.println(client_idb.getServerUrl());
+  } else {
+    Serial.print(F("InfluxDB connection failed: "));
+    Serial.println(client_idb.getLastErrorMessage());
+  }
 }
 
