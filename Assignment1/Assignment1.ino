@@ -56,7 +56,9 @@ int val; //per photointerrupter
 unsigned int persone = 0;
 unsigned long tempoIn = 0;
 unsigned long tempoOut = 0;
-char led_status[6];
+char led_status[20];
+long rssi;
+float T;
 
 void setup() {
   WiFi.mode(WIFI_STA);
@@ -69,13 +71,7 @@ void setup() {
     Serial.println(F("LCD found."));
     lcd.begin(DISPLAY_CHARS, 2);   // initialize the lcd
 
-  } //else {
-  //   Serial.print(F("LCD not found. Error "));
-  //   Serial.println(error);
-  //   Serial.println(F("Check connections and configuration. Reset to try again!"));
-  //   while (true)
-  //     delay(1);
-  // }
+  }
   
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
@@ -92,7 +88,7 @@ void setup() {
 
 void loop() {
   int static init_db = 0;
-  long rssi = connectToWiFi();  
+  rssi = connectToWiFi();  
   lcd.setBacklight(255);  // set backlight to maximum
   lcd.home();               // move cursor to 0,0
   lcd.clear();
@@ -125,12 +121,7 @@ void ledOff() {
 
 void personaIn() {
   tempoIn = millis();
-  float Vo = analogRead(NTC_PIN);              // voltage, range 0~1023
-  float R2 = NTC_R1 * ((float)Vo / 1023.0f);   // compute the resistance on thermistor at current temperature
-  float logR2R1 = log(R2 / NTC_R1);
-  float T = 1.0f / (NTC_A + (NTC_B * logR2R1) + (NTC_C * (logR2R1 * logR2R1)) + (NTC_D * (logR2R1 * logR2R1 * logR2R1)));   // temperature in Kelvin
-  T = T - 273.15f;  
-
+  T=CalcolaTemp();
   if (persone < 5) {
     
     persone++;
@@ -143,7 +134,7 @@ void personaIn() {
     digitalWrite(BUZZER, LOW);   // turn the buzzer on by making the voltage LOW
     delay(500);                 // wait for a second
     digitalWrite(BUZZER, HIGH);   // turn the buzzer off
-    strcpy(led_status, "open");
+    strcpy(led_status, "Accesso consentito");
     
 
     
@@ -151,17 +142,18 @@ void personaIn() {
   if (persone==5){
     digitalWrite(LED_RED, HIGH);  // ROSSO alla 5ª persona
     digitalWrite(LED_GREEN, LOW);
-    strcpy(led_status, "close");
+    strcpy(led_status, "Massima capienza");
    
 
   }
  WriteMultiToDB(led_status, T);   // write on MySQL table if connection works
- WriteMultiToInflux(persone, T);   // write on InfluxDB
+ WriteMultiToInflux(persone, T, led_status, rssi);   // write on InfluxDB
 }
 
 void personaOut() {
   tempoOut = millis();
   persone--;
+  T=CalcolaTemp();
 
   Serial.println("<< USCITA");
   Serial.print("Tempo: "); Serial.println(tempoOut);
@@ -171,6 +163,7 @@ void personaOut() {
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_GREEN, HIGH);
   }
+  WriteMultiToInflux(persone, T, led_status, rssi);   // write on InfluxDB
 }
 
 bool isButtonPressed() {
@@ -249,7 +242,7 @@ long connectToWiFi() {
 
   return rssi_strength;
 }
-void WriteMultiToInflux(int persone, float T) {
+void WriteMultiToInflux(int persone, float T, char led_status[], long rssi) {
 
   // store measured value into point
   pointDevice.clearFields();
@@ -257,6 +250,8 @@ void WriteMultiToInflux(int persone, float T) {
   // report RSSI of currently connected network
   pointDevice.addField("persone", persone);
   pointDevice.addField("temperatura", T);
+  pointDevice.addField("led_status", led_status);
+  pointDevice.addField("rssi", rssi);
   Serial.print(F("Writing: "));
   Serial.println(pointDevice.toLineProtocol());
   if (!client_idb.writePoint(pointDevice)) {
@@ -275,4 +270,11 @@ void check_influxdb() {
     Serial.println(client_idb.getLastErrorMessage());
   }
 }
-
+float CalcolaTemp(){
+  float Vo = analogRead(NTC_PIN);              // voltage, range 0~1023
+  float R2 = NTC_R1 * ((float)Vo / 1023.0f);   // compute the resistance on thermistor at current temperature
+  float logR2R1 = log(R2 / NTC_R1);
+  float T = 1.0f / (NTC_A + (NTC_B * logR2R1) + (NTC_C * (logR2R1 * logR2R1)) + (NTC_D * (logR2R1 * logR2R1 * logR2R1)));   // temperature in Kelvin
+  T = T - 273.15f;
+  return T;
+}
