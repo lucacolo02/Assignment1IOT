@@ -5,7 +5,7 @@
 #include <MySQL_Connection.h>
 #include <MySQL_Cursor.h>
 #include <InfluxDbClient.h>
-
+#include <ESP8266WebServer.h>
 // InfluxDB cfg
 InfluxDBClient client_idb(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
 Point pointDevice("device_status");
@@ -51,6 +51,11 @@ LiquidCrystal_I2C lcd(DISPLAY_ADDR, DISPLAY_CHARS, DISPLAY_LINES);   // display 
 #define BUTTON_DEBOUNCE_DELAY 20
 #define BUZZER D4
 #define PHOTOINTERRUPTER D5
+#define LED_ONBOARD LED_BUILTIN_AUX 
+
+ESP8266WebServer server(80);   // HTTP server on port 80
+
+bool led_state = HIGH;
 
 int val; //per photointerrupter
 unsigned int persone = 0;
@@ -62,6 +67,11 @@ float T;
 
 void setup() {
   WiFi.mode(WIFI_STA);
+  server.on("/", handle_root);
+  server.on("/ON", handle_ledon);
+  server.on("/OFF", handle_ledoff);
+  server.onNotFound(handle_NotFound);
+  server.begin();
   Serial.begin(115200);
   
   Wire.begin();
@@ -72,7 +82,8 @@ void setup() {
     lcd.begin(DISPLAY_CHARS, 2);   // initialize the lcd
 
   }
-  
+  pinMode(LED_ONBOARD, OUTPUT);
+  digitalWrite(LED_ONBOARD, HIGH);
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
   pinMode(BUTTON, INPUT_PULLUP);
@@ -94,14 +105,20 @@ void loop() {
   lcd.clear();
   lcd.print(persone);
   val=digitalRead(PHOTOINTERRUPTER); //read the value of the sensor 
-  if(val == HIGH && millis() - tempoOut > 1000 && persone > 0) // turn on LED when sensor is blocked 
+  // if(led_state==LOW)
+  // {
+  //   digitalWrite(LED_RED, LOW);
+  //   digitalWrite(LED_GREEN, LOW);
+  //   persone=0;
+  // }
+  if(val == HIGH && millis() - tempoOut > 1000 && persone > 0 && led_state==HIGH) // turn on LED when sensor is blocked 
 	{
 		personaOut();
 	}
 	
 
   // SE PREMO IL BOTTONE, INTERPRETO COME INGRESSO
-  if (isButtonPressed() && millis() - tempoIn > 1000 && persone<5) {
+  if (isButtonPressed() && millis() - tempoIn > 1000 && persone<5 && led_state==HIGH) {
     personaIn();
     
   }
@@ -109,9 +126,11 @@ void loop() {
   if (init_db == 0) {   // set tags
     pointDevice.addTag("device", "ESP8266");
     pointDevice.addTag("SSID", WiFi.SSID());
+    
     init_db = 1;
   }
-  
+  server.handleClient();   // listening for clients on port 80
+  digitalWrite(LED_ONBOARD, !led_state);
 }
 
 void ledOff() {
@@ -235,6 +254,7 @@ long connectToWiFi() {
     }
     Serial.println(F("\nConnected!"));
     rssi_strength = WiFi.RSSI();   // get wifi signal strength
+    printWifiStatus();
     
   } else {
     rssi_strength = WiFi.RSSI();   // get wifi signal strength
@@ -277,4 +297,86 @@ float CalcolaTemp(){
   float T = 1.0f / (NTC_A + (NTC_B * logR2R1) + (NTC_C * (logR2R1 * logR2R1)) + (NTC_D * (logR2R1 * logR2R1 * logR2R1)));   // temperature in Kelvin
   T = T - 273.15f;
   return T;
+}
+void handle_root() {
+  Serial.print(F("New Client with IP: "));
+  Serial.println(server.client().remoteIP().toString());
+  server.send(200, F("text/html"), SendHTML(led_state));
+}
+
+void handle_ledon() {
+  led_state = HIGH;
+  Serial.println(F("Led ON"));
+  server.send(200, F("text/html"), SendHTML(led_state));
+}
+
+void handle_ledoff() {
+  led_state = LOW;
+  Serial.println(F("Led OFF"));
+  server.send(200, F("text/html"), SendHTML(led_state));
+}
+
+void handle_NotFound() {
+  server.send(404, F("text/plain"), F("Not found"));
+}
+String SendHTML(uint8_t ledstat) {
+  String ptr = F(
+      "<!DOCTYPE html> <html>\n"
+      "<head><meta http-equiv=\"refresh\" content=\"30\" name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n"
+      "<title>Web LED Control</title>\n"
+      "<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n"
+      "body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n"
+      ".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n"
+      ".button-on {background-color: #1abc9c;}\n"
+      ".button-on:active {background-color: #16a085;}\n"
+      ".button-off {background-color: #ff4133;}\n"
+      ".button-off:active {background-color: #d00000;}\n"
+      "p {font-size: 14px;color: #888;margin-bottom: 10px;}\n"
+      "</style>\n"
+      "</head>\n"
+      "<body>\n"
+      "<h1>Turning Led ON/OFF </h1>\n");
+
+  if (ledstat) {
+    ptr += F("<p>Current LED Status: ON</p><a class=\"button button-off\" href=\"/OFF\">OFF</a>\n");
+  } else {
+    ptr += F("<p>Current LED Status: OFF</p><a class=\"button button-on\" href=\"/ON\">ON</a>\n");
+  }
+
+  ptr += F(
+      "</body>\n"
+      "</html>\n");
+  return ptr;
+}
+
+void printWifiStatus() {
+  Serial.println(F("\n=== WiFi connection status ==="));
+
+  // SSID
+  Serial.print(F("SSID: "));
+  Serial.println(WiFi.SSID());
+
+  // signal strength
+  Serial.print(F("Signal strength (RSSI): "));
+  Serial.print(WiFi.RSSI());
+  Serial.println(F(" dBm"));
+
+  // current IP
+  Serial.print(F("IP Address: "));
+  Serial.println(WiFi.localIP().toString());
+  // WiFi.localIP().printTo(Serial);
+
+  // subnet mask
+  Serial.print(F("Subnet mask: "));
+  Serial.println(WiFi.subnetMask().toString());
+
+  // gateway
+  Serial.print(F("Gateway IP: "));
+  Serial.println(WiFi.gatewayIP().toString());
+
+  // DNS
+  Serial.print(F("DNS IP: "));
+  Serial.println(WiFi.dnsIP().toString());
+
+  Serial.println(F("==============================\n"));
 }
