@@ -8,7 +8,8 @@
 #include <ESP8266WebServer.h>
 // InfluxDB cfg
 InfluxDBClient client_idb(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
-Point pointDevice("device_status");
+Point pointDevice("GioelleriaStatus");
+Point pointPersone("PersoneInStatus");
 // WiFi cfg
 char ssid[] = SECRET_SSID;   // your network SSID (name)
 char pass[] = SECRET_PASS;   // your network password
@@ -64,6 +65,7 @@ unsigned long tempoOut = 0;
 char led_status[20];
 long rssi;
 float T;
+bool acceso;
 
 void setup() {
   WiFi.mode(WIFI_STA);
@@ -80,7 +82,7 @@ void setup() {
   if (error == 0) {
     Serial.println(F("LCD found."));
     lcd.begin(DISPLAY_CHARS, 2);   // initialize the lcd
-
+    acceso=1;
   }
   pinMode(LED_ONBOARD, OUTPUT);
   digitalWrite(LED_ONBOARD, HIGH);
@@ -95,40 +97,52 @@ void setup() {
   digitalWrite(BUZZER, HIGH);
   Serial.begin(115200);
   Serial.println(F("\n\nSetup completed.\n\n"));
+  aggiornaDisplay(persone);
 }
 
 void loop() {
   int static init_db = 0;
   rssi = connectToWiFi();  
-  lcd.setBacklight(255);  // set backlight to maximum
-  lcd.home();               // move cursor to 0,0
-  lcd.clear();
-  lcd.print(persone);
+  // lcd.setBacklight(255);  // set backlight to maximum
+  // lcd.home();               // move cursor to 0,0
+  // lcd.clear();
+  // lcd.print(persone);
   val=digitalRead(PHOTOINTERRUPTER); //read the value of the sensor 
-  // if(led_state==LOW)
-  // {
-  //   digitalWrite(LED_RED, LOW);
-  //   digitalWrite(LED_GREEN, LOW);
-  //   persone=0;
-  // }
+  if(acceso==0 && led_state==HIGH){
+    lcd.begin(DISPLAY_CHARS, 2);   // initialize the lcd
+    acceso=1;
+    aggiornaDisplay(persone);
+    WriteMultiToInflux(persone, T, rssi, led_state);   // write on InfluxDB
+  }
+  if(led_state==LOW && acceso==1)
+  {
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_GREEN, LOW);
+    persone=0;
+    lcd.noDisplay();
+    acceso=0;
+    WriteMultiToInflux(persone, T, rssi, led_state);   // write on InfluxDB
+
+  }
   if(val == HIGH && millis() - tempoOut > 1000 && persone > 0 && led_state==HIGH) // turn on LED when sensor is blocked 
 	{
 		personaOut();
+    aggiornaDisplay(persone);
 	}
 	
 
   // SE PREMO IL BOTTONE, INTERPRETO COME INGRESSO
   if (isButtonPressed() && millis() - tempoIn > 1000 && persone<5 && led_state==HIGH) {
     personaIn();
-    
+    aggiornaDisplay(persone);
   }
   
-  if (init_db == 0) {   // set tags
-    pointDevice.addTag("device", "ESP8266");
-    pointDevice.addTag("SSID", WiFi.SSID());
+  // if (init_db == 0) {   // set tags
+  //   pointDevice.addTag("device", "ESP8266");
+  //   pointDevice.addTag("SSID", WiFi.SSID());
     
-    init_db = 1;
-  }
+  //   init_db = 1;
+  // }
   server.handleClient();   // listening for clients on port 80
   digitalWrite(LED_ONBOARD, !led_state);
 }
@@ -166,7 +180,8 @@ void personaIn() {
 
   }
  WriteMultiToDB(led_status, T);   // write on MySQL table if connection works
- WriteMultiToInflux(persone, T, led_status, rssi);   // write on InfluxDB
+ WriteMultiToInflux(persone, T, rssi, led_state);   // write on InfluxDB
+ WritePersoneToInflux(persone);
 }
 
 void personaOut() {
@@ -182,7 +197,7 @@ void personaOut() {
     digitalWrite(LED_RED, LOW);
     digitalWrite(LED_GREEN, HIGH);
   }
-  WriteMultiToInflux(persone, T, led_status, rssi);   // write on InfluxDB
+  WriteMultiToInflux(persone, T, rssi, led_state);   // write on InfluxDB
 }
 
 bool isButtonPressed() {
@@ -262,19 +277,33 @@ long connectToWiFi() {
 
   return rssi_strength;
 }
-void WriteMultiToInflux(int persone, float T, char led_status[], long rssi) {
+void WriteMultiToInflux(int persone, float T, long rssi, bool led_state) {
 
   // store measured value into point
   pointDevice.clearFields();
-
-  // report RSSI of currently connected network
+  pointPersone.clearTags();
   pointDevice.addField("persone", persone);
   pointDevice.addField("temperatura", T);
-  pointDevice.addField("led_status", led_status);
   pointDevice.addField("rssi", rssi);
+  pointDevice.addField("led_state", led_state);
+
   Serial.print(F("Writing: "));
   Serial.println(pointDevice.toLineProtocol());
   if (!client_idb.writePoint(pointDevice)) {
+    Serial.print(F("InfluxDB write failed: "));
+    Serial.println(client_idb.getLastErrorMessage());
+  }
+}
+void WritePersoneToInflux(int persone) {
+  pointPersone.clearFields();
+  pointPersone.clearTags();
+
+  pointPersone.addField("persone_attuali", persone);
+
+  Serial.print(F("Writing ingresso: "));
+  Serial.println(pointPersone.toLineProtocol());
+
+  if (!client_idb.writePoint(pointPersone)) {
     Serial.print(F("InfluxDB write failed: "));
     Serial.println(client_idb.getLastErrorMessage());
   }
@@ -321,32 +350,61 @@ void handle_NotFound() {
 }
 String SendHTML(uint8_t ledstat) {
   String ptr = F(
-      "<!DOCTYPE html> <html>\n"
-      "<head><meta http-equiv=\"refresh\" content=\"30\" name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n"
-      "<title>Web LED Control</title>\n"
-      "<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n"
-      "body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n"
-      ".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n"
-      ".button-on {background-color: #1abc9c;}\n"
-      ".button-on:active {background-color: #16a085;}\n"
-      ".button-off {background-color: #ff4133;}\n"
-      ".button-off:active {background-color: #d00000;}\n"
-      "p {font-size: 14px;color: #888;margin-bottom: 10px;}\n"
-      "</style>\n"
-      "</head>\n"
-      "<body>\n"
-      "<h1>Turning Led ON/OFF </h1>\n");
+    "<!DOCTYPE html><html lang=\"en\">\n"
+    "<head>\n"
+    "<meta charset=\"UTF-8\">\n"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+    "<meta http-equiv=\"refresh\" content=\"30\">\n"
+    "<title>Web LED Control</title>\n"
+    "<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='limegreen' d='M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm1 14h-2v-2h2zm0-4h-2V7h2z'/></svg>\">\n"
+    "<style>\n"
+    "body { font-family: 'Segoe UI', sans-serif; background: #f0f0f0; margin: 0; padding: 0; text-align: center; }\n"
+    "h1 { color: #2c3e50; margin-top: 40px; }\n"
+    "h3 { color: #34495e; }\n"
+    ".status { font-size: 18px; margin: 20px auto; color: #555; }\n"
+    ".led-on { color: #27ae60; font-weight: bold; }\n"
+    ".led-off { color: #c0392b; font-weight: bold; }\n"
+    ".button { display: inline-block; padding: 15px 35px; font-size: 20px; border: none; border-radius: 8px; text-decoration: none; color: white; transition: background 0.3s ease; margin-top: 20px; }\n"
+    ".button-on { background-color: #27ae60; }\n"
+    ".button-on:hover { background-color: #219150; }\n"
+    ".button-off { background-color: #e74c3c; }\n"
+    ".button-off:hover { background-color: #c0392b; }\n"
+    "footer { margin-top: 40px; font-size: 12px; color: #aaa; }\n"
+    "</style>\n"
+    "</head>\n"
+    "<body>\n"
+    "<h1>🔌 Gioielleria </h1>\n");
 
   if (ledstat) {
-    ptr += F("<p>Current LED Status: ON</p><a class=\"button button-off\" href=\"/OFF\">OFF</a>\n");
+    ptr += F("<p class=\"status\">Stato del sistema attuale: <span class=\"led-on\">ON</span></p>\n");
+    ptr += F("<a class=\"button button-off\" href=\"/OFF\">Chiudi Negozio</a>\n");
   } else {
-    ptr += F("<p>Current LED Status: OFF</p><a class=\"button button-on\" href=\"/ON\">ON</a>\n");
+    ptr += F("<p class=\"status\">Stato del sistema attuale: <span class=\"led-off\">OFF</span></p>\n");
+    ptr += F("<a class=\"button button-on\" href=\"/ON\">Apri Negozio</a>\n");
   }
 
   ptr += F(
-      "</body>\n"
-      "</html>\n");
+    "<footer>ESP32 Web Controller &copy; 2025</footer>\n"
+    "</body>\n"
+    "</html>\n");
+
   return ptr;
+}
+
+void aggiornaDisplay(int persone) {
+  lcd.clear();       
+  lcd.setBacklight(255);  
+  lcd.home();           // Pulisce il display
+  lcd.setCursor(0, 0);            // Riga 0, colonna 0
+  lcd.print("Persone: ");
+  lcd.print(persone);
+  lcd.setCursor(0, 1);            // Riga 1, colonna 0
+
+  if (persone < 5) {
+    lcd.print("Accessibile");
+  } else {
+    lcd.print("Massima capienza");
+  }
 }
 
 void printWifiStatus() {
